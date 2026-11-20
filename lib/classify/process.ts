@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { COUNTRIES, COUNTRY_INFO, WINDOW_HOURS, type Country, type Topic } from "@/lib/config";
+import { COUNTRIES, COUNTRY_INFO, MAX_STORIES_PER_CELL, WINDOW_HOURS, type Country, type Topic } from "@/lib/config";
 import type { Coverage, RawItem, Story, TrendingSearch } from "@/lib/types";
 import { THEME_BY_ID, type ThemeId } from "@/lib/profile";
 import { matchThemes } from "./affinity";
@@ -141,5 +141,18 @@ export const processItems = (
       const story = buildStory(members, country, trends, known, now);
       return story && !isExcluded(story.title, story.topic) ? [story] : [];
     }),
-  ).sort((a, b) => b.score - a.score);
+  )
+    .sort((a, b) => b.score - a.score)
+    .filter(keepTopPerCell());
+};
+
+/** Se queda con las MAX_STORIES_PER_CELL más virales de cada país × topic (la lista llega ordenada). */
+const keepTopPerCell = () => {
+  const seen = new Map<string, number>();
+  return (story: Story): boolean => {
+    const key = `${story.country}:${story.topic}`;
+    const count = (seen.get(key) ?? 0) + 1;
+    seen.set(key, count);
+    return count <= MAX_STORIES_PER_CELL;
+  };
 };

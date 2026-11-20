@@ -65,6 +65,9 @@ export const SCORE_WEIGHTS = {
 export const COVERAGE_SATURATION = 8;
 /** Vida media de la frescura, en horas. */
 export const FRESHNESS_HALF_LIFE_HOURS = 4;
+/** Máximo de historias que se guardan por país y topic en cada lectura (las más virales). */
+export const MAX_STORIES_PER_CELL = 40;
+
 /** Ventana de noticias consideradas, en horas. */
 export const WINDOW_HOURS = 24;
 
