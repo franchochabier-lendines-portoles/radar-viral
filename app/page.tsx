@@ -46,7 +46,7 @@ const Page = async ({ searchParams }: PageProps) => {
 
       {data.demo && (
         <p className="mb-4 rounded-panel bg-notice px-4 py-3 text-sm">
-          Estás viendo datos de demo: titulares inventados repartidos al azar entre medios reales. {isReadOnly() ? "Se sustituirán por datos reales en la próxima lectura." : "Pulsa Actualizar para leer las fuentes de verdad."}
+          Estás viendo datos de demo: titulares inventados repartidos al azar entre medios reales. Al pulsar uno se abre una búsqueda de ese tema en Google News. {isReadOnly() ? "Se sustituirán por datos reales en la próxima lectura." : "Pulsa Actualizar para leer las fuentes de verdad."}
         </p>
       )}
 

@@ -1,4 +1,4 @@
-import { WINDOW_HOURS, type Country } from "@/lib/config";
+import { COUNTRY_INFO, WINDOW_HOURS, type Country } from "@/lib/config";
 import { processItems } from "@/lib/classify/process";
 import { clearAll, knownStories, saveIngest } from "@/lib/db/repository";
 import type { RawItem, TrendingSearch } from "@/lib/types";
@@ -32,6 +32,11 @@ const planStories = (now: number, random: () => number): Plan[] =>
     };
   });
 
+const demoUrl = (country: Country, title: string): string => {
+  const info = COUNTRY_INFO[country];
+  return `https://news.google.com/search?q=${encodeURIComponent(title)}&hl=${info.hl}&gl=${info.gl}&ceid=${info.ceid}`;
+};
+
 const itemsAt = (plans: Plan[], at: number): RawItem[] =>
   plans.flatMap((plan, index) => {
     if (plan.bornAt > at) return [];
@@ -45,7 +50,8 @@ const itemsAt = (plans: Plan[], at: number): RawItem[] =>
         country: plan.country,
         topicHint: plan.topic,
         title: plan.title,
-        url: `https://${outlet.domain}/demo/${index}`,
+        // Los titulares son inventados: el enlace abre una búsqueda real del tema en Google News.
+        url: demoUrl(plan.country, plan.title),
         sourceName: outlet.name,
         sourceDomain: outlet.domain,
         publishedAt: plan.bornAt + rank * 17 * 60_000,
