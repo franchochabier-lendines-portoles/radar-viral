@@ -1,7 +1,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import nodemailer from "nodemailer";
-import { isDemo, listCurrentStories, recordDigest } from "@/lib/db/repository";
+import { isDemo, lastDigestAt, listCurrentStories, recordDigest } from "@/lib/db/repository";
+import { madridHour } from "@/lib/format";
 import type { DigestRecord } from "@/lib/types";
 import { selectForDigest } from "./select";
 import { digestSubject, renderDigest } from "./template";
@@ -17,9 +18,9 @@ const parseRecipients = (explicit: readonly string[]): string[] => {
   return list.map((r) => r.trim()).filter((r) => r.includes("@"));
 };
 
-export const buildDigest = (sentAt = Date.now()): { subject: string; html: string; storyCount: number } => {
-  const selection = selectForDigest(listCurrentStories({}));
-  const input = { selection, sentAt, demo: isDemo(), dashboardUrl: process.env.DASHBOARD_URL ?? null };
+export const buildDigest = async (sentAt = Date.now()): Promise<{ subject: string; html: string; storyCount: number }> => {
+  const selection = selectForDigest(await listCurrentStories({}));
+  const input = { selection, sentAt, demo: await isDemo(), dashboardUrl: process.env.DASHBOARD_URL ?? null };
   return {
     subject: digestSubject(input),
     html: renderDigest(input),
@@ -27,7 +28,9 @@ export const buildDigest = (sentAt = Date.now()): { subject: string; html: strin
   };
 };
 
-const saveToOutbox = (sentAt: number, html: string): string => {
+/** En local deja una copia en data/outbox; en la nube (sin disco) solo queda en la base. */
+const saveToOutbox = (sentAt: number, html: string): string | null => {
+  if (process.env.TURSO_DATABASE_URL) return null;
   mkdirSync(OUTBOX, { recursive: true });
   const file = join(OUTBOX, `radar-${new Date(sentAt).toISOString().replace(/[:.]/g, "-")}.html`);
   writeFileSync(file, html, "utf8");
@@ -37,7 +40,7 @@ const saveToOutbox = (sentAt: number, html: string): string => {
 /** Envía el correo por SMTP; sin SMTP lo guarda en data/outbox (modo simulado). */
 export const sendDigest = async (explicitRecipients: readonly string[] = []): Promise<DigestOutcome> => {
   const sentAt = Date.now();
-  const { subject, html, storyCount } = buildDigest(sentAt);
+  const { subject, html, storyCount } = await buildDigest(sentAt);
   if (storyCount === 0) throw new Error("No hay historias que enviar. Lanza una ingesta primero.");
 
   const recipients = parseRecipients(explicitRecipients);
@@ -62,6 +65,16 @@ export const sendDigest = async (explicitRecipients: readonly string[] = []): Pr
     subject,
     file,
   };
-  recordDigest(outcome);
+  await recordDigest({ ...outcome, html });
   return outcome;
+};
+
+const DIGEST_HOURS = (process.env.DIGEST_HOURS ?? "9,14,20").split(",").map(Number);
+
+/** Envía el correo solo si ahora es una de las horas de envío (Madrid) y no salió ya en esta hora. */
+export const sendDigestIfDue = async (now = Date.now()): Promise<DigestOutcome | null> => {
+  if (!DIGEST_HOURS.includes(madridHour(now))) return null;
+  const last = await lastDigestAt();
+  if (last !== null && now - last < 50 * 60_000) return null;
+  return sendDigest();
 };

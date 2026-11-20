@@ -1,9 +1,12 @@
+import type { InStatement } from "@libsql/client";
 import { z } from "zod";
 import { isCountry, isTopic, type Country, type Topic } from "@/lib/config";
 import type { KnownStory } from "@/lib/classify/process";
 import { isThemeId, type ThemeId } from "@/lib/profile";
 import type { DigestRecord, HeatPoint, Story, TrendingSearch } from "@/lib/types";
 import { getDb } from "./client";
+
+const HOUR_MS = 3_600_000;
 
 const coverageSchema = z.object({
   outletId: z.string(),
@@ -25,123 +28,169 @@ const payloadSchema = z.object({
     .transform((list) => list.filter((t): t is ThemeId => isThemeId(t))),
 });
 
+const num = z.coerce.number();
+
 const storyRowSchema = z.object({
   id: z.string(),
-  country: z.string().refine(isCountry),
-  topic: z.string().refine(isTopic),
+  country: z.string(),
+  topic: z.string(),
   title: z.string(),
   url: z.string(),
   payload: z.string(),
-  first_seen_at: z.number(),
-  score: z.number(),
+  first_seen_at: num,
+  score: num,
 });
 
 const toStory = (row: unknown): Story | null => {
   const parsed = storyRowSchema.safeParse(row);
   if (!parsed.success) return null;
-  const { payload, first_seen_at, ...rest } = parsed.data;
+  const { payload, first_seen_at, country, topic, ...rest } = parsed.data;
   const details = payloadSchema.safeParse(JSON.parse(payload));
-  if (!details.success || !isCountry(rest.country) || !isTopic(rest.topic)) return null;
-  return { ...rest, country: rest.country, topic: rest.topic, firstSeenAt: first_seen_at, ...details.data };
+  if (!details.success || !isCountry(country) || !isTopic(topic)) return null;
+  return { ...rest, country, topic, firstSeenAt: first_seen_at, ...details.data };
+};
+
+const rowsOf = async (sql: string, args: Array<string | number> = []): Promise<unknown[]> => {
+  const db = await getDb();
+  const result = await db.execute({ sql, args });
+  return result.rows.map((row) => ({ ...row }));
 };
 
 /* ---------- Meta ---------- */
 
-export const getMeta = (key: string): string | null => {
-  const row = z.object({ value: z.string() }).safeParse(getDb().prepare("SELECT value FROM meta WHERE key = ?").get(key));
-  return row.success ? row.data.value : null;
+export const getMeta = async (key: string): Promise<string | null> => {
+  const [row] = await rowsOf("SELECT value FROM meta WHERE key = ?", [key]);
+  const parsed = z.object({ value: z.string() }).safeParse(row);
+  return parsed.success ? parsed.data.value : null;
 };
 
-export const setMeta = (key: string, value: string): void => {
-  getDb().prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+const setMetaStatement = (key: string, value: string): InStatement => ({
+  sql: "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+  args: [key, value],
+});
+
+export const setMeta = async (key: string, value: string): Promise<void> => {
+  await (await getDb()).execute(setMetaStatement(key, value));
 };
 
-export const isDemo = (): boolean => getMeta("demo") === "1";
+export const isDemo = async (): Promise<boolean> => (await getMeta("demo")) === "1";
+
+/**
+ * Reserva la ingesta durante `ttlMs` para que dos servidores no lean a la vez.
+ * Devuelve false si otro ya la tiene.
+ */
+export const acquireLock = async (name: string, now: number, ttlMs: number): Promise<boolean> => {
+  const db = await getDb();
+  const result = await db.execute({
+    sql: `INSERT INTO meta (key, value) VALUES (?, ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE CAST(meta.value AS INTEGER) < ?`,
+    args: [`lock:${name}`, String(now + ttlMs), now],
+  });
+  return result.rowsAffected > 0;
+};
+
+export const releaseLock = async (name: string): Promise<void> => {
+  await (await getDb()).execute({ sql: "DELETE FROM meta WHERE key = ?", args: [`lock:${name}`] });
+};
 
 /* ---------- Escritura ---------- */
 
 export type IngestWrite = { stories: Story[]; trends: TrendingSearch[]; at: number; demo: boolean };
 
-export const clearAll = (): void => {
-  getDb().exec("DELETE FROM stories; DELETE FROM snapshots; DELETE FROM trends; DELETE FROM meta;");
+const CLEAR_ALL: InStatement[] = ["DELETE FROM stories", "DELETE FROM snapshots", "DELETE FROM trends", "DELETE FROM meta WHERE key NOT LIKE 'lock:%'"];
+
+export const clearAll = async (): Promise<void> => {
+  await (await getDb()).batch(CLEAR_ALL, "write");
 };
 
-export const saveIngest = ({ stories, trends, at, demo }: IngestWrite): void => {
-  const db = getDb();
-  const upsertStory = db.prepare(`
-    INSERT INTO stories (id, country, topic, title, url, payload, first_seen_at, score, updated_at)
-    VALUES (@id, @country, @topic, @title, @url, @payload, @firstSeenAt, @score, @at)
-    ON CONFLICT(id) DO UPDATE SET topic = excluded.topic, title = excluded.title, url = excluded.url,
-      payload = excluded.payload, first_seen_at = MIN(stories.first_seen_at, excluded.first_seen_at),
-      score = excluded.score, updated_at = excluded.updated_at`);
-  const insertSnapshot = db.prepare("INSERT OR REPLACE INTO snapshots (story_id, at, score, coverage) VALUES (?, ?, ?, ?)");
-  const insertTrend = db.prepare("INSERT INTO trends (country, query, traffic, at) VALUES (?, ?, ?, ?)");
+/** Un punto de historial por historia y hora: basta para la tira de 24 h y ahorra escrituras. */
+const hourBucket = (at: number): number => Math.floor(at / HOUR_MS) * HOUR_MS;
 
-  db.transaction(() => {
-    if (!demo && isDemo()) clearAll();
-    for (const story of stories) {
-      const { outlet, firstPublisher, coverage, breakdown, matchedTrend, themes } = story;
-      upsertStory.run({
-        ...story,
+export const saveIngest = async ({ stories, trends, at, demo }: IngestWrite): Promise<void> => {
+  const db = await getDb();
+  const wasDemo = !demo && (await isDemo());
+  const statements: InStatement[] = [...(wasDemo ? CLEAR_ALL : [])];
+
+  for (const story of stories) {
+    const { outlet, firstPublisher, coverage, breakdown, matchedTrend, themes } = story;
+    statements.push({
+      sql: `INSERT INTO stories (id, country, topic, title, url, payload, first_seen_at, score, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET topic = excluded.topic, title = excluded.title, url = excluded.url,
+              payload = excluded.payload, first_seen_at = MIN(stories.first_seen_at, excluded.first_seen_at),
+              score = excluded.score, updated_at = excluded.updated_at`,
+      args: [
+        story.id,
+        story.country,
+        story.topic,
+        story.title,
+        story.url,
+        JSON.stringify({ outlet, firstPublisher, coverage, breakdown, matchedTrend, themes }),
+        story.firstSeenAt,
+        story.score,
         at,
-        payload: JSON.stringify({ outlet, firstPublisher, coverage, breakdown, matchedTrend, themes }),
-      });
-      insertSnapshot.run(story.id, at, story.score, coverage.length);
+      ],
+    });
+    statements.push({
+      sql: `INSERT INTO snapshots (story_id, at, score, coverage) VALUES (?, ?, ?, ?)
+            ON CONFLICT(story_id, at) DO UPDATE SET score = MAX(snapshots.score, excluded.score), coverage = excluded.coverage`,
+      args: [story.id, hourBucket(at), story.score, coverage.length],
+    });
+  }
+  if (trends.length > 0) {
+    statements.push("DELETE FROM trends");
+    for (const trend of trends) {
+      statements.push({ sql: "INSERT INTO trends (country, query, traffic, at) VALUES (?, ?, ?, ?)", args: [trend.country, trend.query, trend.traffic, at] });
     }
-    if (trends.length > 0) {
-      db.prepare("DELETE FROM trends").run();
-      for (const trend of trends) insertTrend.run(trend.country, trend.query, trend.traffic, at);
-    }
-    setMeta("last_ingest", String(at));
-    setMeta("demo", demo ? "1" : "0");
-  })();
+  }
+  statements.push(setMetaStatement("last_ingest", String(at)), setMetaStatement("demo", demo ? "1" : "0"));
+  await db.batch(statements, "write");
 };
 
 /** Borra lo que tenga más de dos días para que la base no crezca sin fin. */
-export const prune = (now: number): void => {
-  const cutoff = now - 48 * 3_600_000;
-  const db = getDb();
-  db.prepare("DELETE FROM snapshots WHERE at < ?").run(cutoff);
-  db.prepare("DELETE FROM stories WHERE updated_at < ?").run(cutoff);
+export const prune = async (now: number): Promise<void> => {
+  const cutoff = now - 48 * HOUR_MS;
+  await (await getDb()).batch(
+    [
+      { sql: "DELETE FROM snapshots WHERE at < ?", args: [cutoff] },
+      { sql: "DELETE FROM stories WHERE updated_at < ?", args: [cutoff] },
+      { sql: "DELETE FROM digests WHERE sent_at < ?", args: [now - 30 * 24 * HOUR_MS] },
+    ],
+    "write",
+  );
 };
 
 /* ---------- Lectura ---------- */
 
-export const knownStories = (since: number): KnownStory[] =>
+export const knownStories = async (since: number): Promise<KnownStory[]> =>
   z
-    .array(z.object({ id: z.string(), country: z.string().refine(isCountry), title: z.string() }))
-    .parse(getDb().prepare("SELECT id, country, title FROM stories WHERE updated_at >= ?").all(since))
+    .array(z.object({ id: z.string(), country: z.string(), title: z.string() }))
+    .parse(await rowsOf("SELECT id, country, title FROM stories WHERE updated_at >= ?", [since]))
     .flatMap((row) => (isCountry(row.country) ? [{ id: row.id, country: row.country, title: row.title }] : []));
 
-export type StoryQuery = { since: number; country?: Country; topic?: Topic };
+export type StoryQuery = { country?: Country; topic?: Topic };
 
 /** Historias vigentes: las que aparecieron en la última ingesta. */
-export const listCurrentStories = ({ country, topic }: Omit<StoryQuery, "since">): Story[] => {
-  const lastIngest = Number(getMeta("last_ingest") ?? 0);
+export const listCurrentStories = async ({ country, topic }: StoryQuery): Promise<Story[]> => {
+  const lastIngest = Number((await getMeta("last_ingest")) ?? 0);
   const filters: Array<[string, string]> = [];
   if (country) filters.push(["country = ?", country]);
   if (topic) filters.push(["topic = ?", topic]);
   const where = ["updated_at = ?", ...filters.map(([clause]) => clause)].join(" AND ");
-  const rows = getDb()
-    .prepare(`SELECT * FROM stories WHERE ${where} ORDER BY score DESC`)
-    .all(lastIngest, ...filters.map(([, value]) => value));
+  const rows = await rowsOf(`SELECT * FROM stories WHERE ${where} ORDER BY score DESC`, [lastIngest, ...filters.map(([, value]) => value)]);
   return rows.flatMap((row) => {
     const story = toStory(row);
     return story ? [story] : [];
   });
 };
 
-export const historyFor = (ids: readonly string[], since: number): Map<string, HeatPoint[]> => {
+export const historyFor = async (ids: readonly string[], since: number): Promise<Map<string, HeatPoint[]>> => {
   const result = new Map<string, HeatPoint[]>();
   if (ids.length === 0) return result;
   const placeholders = ids.map(() => "?").join(",");
   const rows = z
-    .array(z.object({ story_id: z.string(), at: z.number(), score: z.number() }))
-    .parse(
-      getDb()
-        .prepare(`SELECT story_id, at, score FROM snapshots WHERE at >= ? AND story_id IN (${placeholders}) ORDER BY at`)
-        .all(since, ...ids),
-    );
+    .array(z.object({ story_id: z.string(), at: num, score: num }))
+    .parse(await rowsOf(`SELECT story_id, at, score FROM snapshots WHERE at >= ? AND story_id IN (${placeholders}) ORDER BY at`, [since, ...ids]));
   for (const row of rows) {
     const list = result.get(row.story_id) ?? [];
     list.push({ at: row.at, score: row.score });
@@ -150,30 +199,37 @@ export const historyFor = (ids: readonly string[], since: number): Map<string, H
   return result;
 };
 
-export const latestTrends = (): TrendingSearch[] =>
+export const latestTrends = async (): Promise<TrendingSearch[]> =>
   z
-    .array(z.object({ country: z.string(), query: z.string(), traffic: z.number() }))
-    .parse(getDb().prepare("SELECT country, query, traffic FROM trends ORDER BY traffic DESC").all())
+    .array(z.object({ country: z.string(), query: z.string(), traffic: num }))
+    .parse(await rowsOf("SELECT country, query, traffic FROM trends ORDER BY traffic DESC"))
     .flatMap((row) => (isCountry(row.country) ? [{ ...row, country: row.country }] : []));
 
 /* ---------- Correos ---------- */
 
-export const recordDigest = (record: Omit<DigestRecord, "id"> & { file: string | null }): void => {
-  getDb()
-    .prepare("INSERT INTO digests (sent_at, recipients, mode, story_count, file) VALUES (?, ?, ?, ?, ?)")
-    .run(record.sentAt, record.recipients, record.mode, record.storyCount, record.file);
+export const recordDigest = async (record: Omit<DigestRecord, "id"> & { file: string | null; html: string }): Promise<void> => {
+  await (await getDb()).execute({
+    sql: "INSERT INTO digests (sent_at, recipients, mode, story_count, file, html) VALUES (?, ?, ?, ?, ?, ?)",
+    args: [record.sentAt, record.recipients, record.mode, record.storyCount, record.file, record.html],
+  });
 };
 
-export const listDigests = (limit: number): DigestRecord[] =>
+export const listDigests = async (limit: number): Promise<DigestRecord[]> =>
   z
     .array(
       z.object({
-        id: z.number(),
-        sent_at: z.number(),
+        id: num,
+        sent_at: num,
         recipients: z.string(),
         mode: z.enum(["smtp", "simulado"]),
-        story_count: z.number(),
+        story_count: num,
       }),
     )
-    .parse(getDb().prepare("SELECT id, sent_at, recipients, mode, story_count FROM digests ORDER BY sent_at DESC LIMIT ?").all(limit))
+    .parse(await rowsOf("SELECT id, sent_at, recipients, mode, story_count FROM digests ORDER BY sent_at DESC LIMIT ?", [limit]))
     .map((row) => ({ id: row.id, sentAt: row.sent_at, recipients: row.recipients, mode: row.mode, storyCount: row.story_count }));
+
+export const lastDigestAt = async (): Promise<number | null> => {
+  const [row] = await rowsOf("SELECT MAX(sent_at) AS at FROM digests");
+  const parsed = z.object({ at: num.nullable() }).safeParse(row);
+  return parsed.success ? parsed.data.at : null;
+};

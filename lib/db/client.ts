@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import Database from "better-sqlite3";
+import { createClient, type Client } from "@libsql/client";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS stories (
@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS digests (
   recipients TEXT NOT NULL,
   mode TEXT NOT NULL,
   story_count INTEGER NOT NULL,
-  file TEXT
+  file TEXT,
+  html TEXT
 );
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -46,17 +47,34 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 `;
 
-const globalForDb = globalThis as typeof globalThis & { radarDb?: Database.Database };
+type DbState = { client: Client; ready: Promise<void> };
 
-export const dbPath = (): string => resolve(process.env.RADAR_DB ?? "data/radar.db");
+const globalForDb = globalThis as typeof globalThis & { radarDb?: DbState };
 
-export const getDb = (): Database.Database => {
-  if (globalForDb.radarDb) return globalForDb.radarDb;
-  const path = dbPath();
-  mkdirSync(dirname(path), { recursive: true });
-  const db = new Database(path);
-  db.pragma("journal_mode = WAL");
-  db.exec(SCHEMA);
-  globalForDb.radarDb = db;
-  return db;
+/**
+ * Con TURSO_DATABASE_URL usa Turso (SQLite en la nube); sin ella, un archivo local
+ * (RADAR_DB, por defecto data/radar.db). El resto de la app no nota la diferencia.
+ */
+const connect = (): DbState => {
+  const remoteUrl = process.env.TURSO_DATABASE_URL;
+  if (!remoteUrl) {
+    const path = resolve(process.env.RADAR_DB ?? "data/radar.db");
+    mkdirSync(dirname(path), { recursive: true });
+  }
+  const client = createClient(
+    remoteUrl
+      ? { url: remoteUrl, authToken: process.env.TURSO_AUTH_TOKEN }
+      : { url: `file:${resolve(process.env.RADAR_DB ?? "data/radar.db")}` },
+  );
+  const ready = client.executeMultiple(SCHEMA).then(async () => {
+    // Columna añadida en 2.3: guarda el HTML del correo en la base (en la nube no hay disco)
+    await client.execute("ALTER TABLE digests ADD COLUMN html TEXT").catch(() => undefined);
+  });
+  return { client, ready };
+};
+
+export const getDb = async (): Promise<Client> => {
+  globalForDb.radarDb ??= connect();
+  await globalForDb.radarDb.ready;
+  return globalForDb.radarDb.client;
 };

@@ -1,3 +1,4 @@
+import { after } from "next/server";
 import { AutoRefresh, Toolbar } from "@/components/actions";
 import { DigestLog } from "@/components/digest-log";
 import { HeatMap } from "@/components/heat-map";
@@ -11,8 +12,11 @@ import { isReadOnly } from "@/lib/access";
 import { getDashboard } from "@/lib/dashboard";
 import { parseFilters } from "@/lib/filters";
 import { formatTime, timeAgo } from "@/lib/format";
+import { ingestIfStale } from "@/lib/pipeline";
 
 export const dynamic = "force-dynamic";
+// Margen para la lectura en segundo plano que lanza after() al abrir el radar.
+export const maxDuration = 60;
 
 type PageProps = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
@@ -21,7 +25,11 @@ const DIGEST_HOURS = (process.env.DIGEST_HOURS ?? "9,14,20").split(",").join(", 
 const Page = async ({ searchParams }: PageProps) => {
   const filters = parseFilters(await searchParams);
   const now = Date.now();
-  const data = getDashboard(filters, now);
+  const data = await getDashboard(filters, now);
+  // Si los datos están viejos, lee las fuentes después de responder (no hace esperar a nadie).
+  after(async () => {
+    await ingestIfStale().catch((error: unknown) => console.warn("[radar] ingesta al abrir fallida:", String(error)));
+  });
   const [lead, ...rest] = data.stories;
 
   return (

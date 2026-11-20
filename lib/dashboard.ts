@@ -47,8 +47,8 @@ export const hourlyHeat = (points: StoryWithHistory["history"], now: number): Ar
     return inHour.length === 0 ? null : Math.max(...inHour.map((p) => p.score));
   });
 
-const withHistory = (stories: Story[], now: number): StoryWithHistory[] => {
-  const history = historyFor(
+const withHistory = async (stories: Story[], now: number): Promise<StoryWithHistory[]> => {
+  const history = await historyFor(
     stories.map((s) => s.id),
     now - WINDOW_HOURS * HOUR_MS,
   );
@@ -84,8 +84,8 @@ const buildSpainOutlets = (stories: Story[]): OutletRow[] => {
     .sort((a, b) => (a.id === OTHER_OUTLET_ID ? 1 : b.id === OTHER_OUTLET_ID ? -1 : b.stories - a.stories));
 };
 
-const buildTrends = (): Record<Country, TrendingSearch[]> => {
-  const all = latestTrends().filter((t) => !isExcluded(t.query, null));
+const buildTrends = async (): Promise<Record<Country, TrendingSearch[]>> => {
+  const all = (await latestTrends()).filter((t) => !isExcluded(t.query, null));
   return Object.fromEntries(COUNTRIES.map((c) => [c, all.filter((t) => t.country === c).slice(0, 8)])) as Record<
     Country,
     TrendingSearch[]
@@ -95,8 +95,8 @@ const buildTrends = (): Record<Country, TrendingSearch[]> => {
 const buildThemeCounts = (stories: Story[]): ThemeCount[] =>
   THEMES.map((theme) => ({ id: theme.id, label: theme.label, count: stories.filter((s) => s.themes.includes(theme.id)).length }));
 
-export const getDashboard = (filters: Filters, now = Date.now()): Dashboard => {
-  const everything = listCurrentStories({}).filter((s) => !isExcluded(s.title, s.topic));
+export const getDashboard = async (filters: Filters, now = Date.now()): Promise<Dashboard> => {
+  const everything = (await listCurrentStories({})).filter((s) => !isExcluded(s.title, s.topic));
   const inProfile = everything.filter((s) => fitsProfile(s.themes));
   const all = filters.scope === "perfil" ? inProfile : everything;
   const filtered = all.filter(
@@ -108,21 +108,27 @@ export const getDashboard = (filters: Filters, now = Date.now()): Dashboard => {
   const forThemes = inProfile.filter(
     (s) => (!filters.country || s.country === filters.country) && (!filters.topic || s.topic === filters.topic),
   );
-  const lastIngest = getMeta("last_ingest");
+  const [lastIngest, demo, stories, trends, digests] = await Promise.all([
+    getMeta("last_ingest"),
+    isDemo(),
+    withHistory(filtered.slice(0, STORY_LIMIT), now),
+    buildTrends(),
+    listDigests(6),
+  ]);
   return {
     lastIngest: lastIngest ? Number(lastIngest) : null,
-    demo: isDemo(),
+    demo,
     filters,
     profileCount: inProfile.length,
     allCount: everything.length,
     themes: buildThemeCounts(forThemes),
     heat: buildHeat(filters.theme ? all.filter((s) => filters.theme !== null && s.themes.includes(filters.theme)) : all),
-    stories: withHistory(filtered.slice(0, STORY_LIMIT), now),
+    stories,
     totalStories: filtered.length,
     spainOutlets: buildSpainOutlets(
       all.filter((s) => (!filters.topic || s.topic === filters.topic) && (!filters.theme || s.themes.includes(filters.theme))),
     ),
-    trends: buildTrends(),
-    digests: listDigests(6),
+    trends,
+    digests,
   };
 };

@@ -66,20 +66,20 @@ const demoTrends = (): TrendingSearch[] =>
     list.map(([query, traffic]) => ({ country, query, traffic })),
   );
 
-const run = (): void => {
+const run = async (): Promise<void> => {
   const now = Date.now();
   const random = seeded(2026);
   const plans = planStories(now, random);
   const trends = demoTrends();
-  clearAll();
+  await clearAll();
 
   let ingests = 0;
   for (let at = now - WINDOW_HOURS * HOUR_MS; at <= now; at += STEP_MINUTES * 60_000) {
-    const stories = processItems(itemsAt(plans, at), trends, knownStories(at - WINDOW_HOURS * HOUR_MS), at);
-    saveIngest({ stories, trends, at, demo: true });
+    const stories = processItems(itemsAt(plans, at), trends, await knownStories(at - WINDOW_HOURS * HOUR_MS), at);
+    await saveIngest({ stories, trends, at, demo: true });
     ingests += 1;
   }
   console.log(`Demo cargada: ${ingests} lecturas simuladas en las últimas ${WINDOW_HOURS} h.`);
 };
 
-run();
+await run();
