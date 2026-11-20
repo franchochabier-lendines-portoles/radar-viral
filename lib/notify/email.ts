@@ -18,9 +18,15 @@ const parseRecipients = (explicit: readonly string[]): string[] => {
   return list.map((r) => r.trim()).filter((r) => r.includes("@"));
 };
 
+const dashboardUrl = (): string | null => {
+  if (process.env.DASHBOARD_URL) return process.env.DASHBOARD_URL;
+  const vercel = process.env.VERCEL_PROJECT_PRODUCTION_URL;
+  return vercel ? `https://${vercel}` : null;
+};
+
 export const buildDigest = async (sentAt = Date.now()): Promise<{ subject: string; html: string; storyCount: number }> => {
   const selection = selectForDigest(await listCurrentStories({}));
-  const input = { selection, sentAt, demo: await isDemo(), dashboardUrl: process.env.DASHBOARD_URL ?? null };
+  const input = { selection, sentAt, demo: await isDemo(), dashboardUrl: dashboardUrl() };
   return {
     subject: digestSubject(input),
     html: renderDigest(input),

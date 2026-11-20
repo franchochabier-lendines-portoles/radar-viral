@@ -19,7 +19,7 @@ export const LeadStory = ({ story }: { story: StoryWithHistory | undefined }) =>
     return (
       <section className="flex flex-col justify-center rounded-panel bg-surface p-6">
         <h2 className="text-xl font-semibold">Nada caliente con estos filtros</h2>
-        <p className="mt-2 text-sm text-muted">Quita algún filtro o lanza una lectura nueva con Actualizar.</p>
+        <p className="mt-2 text-sm text-muted">Quita algún filtro o vuelve en unos minutos: el radar se actualiza solo.</p>
       </section>
     );
   }

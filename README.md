@@ -8,9 +8,9 @@ Cada noticia indica qué medio la firma, cuál la publicó primero y qué otros 
 
 - **Web:** Vercel, desplegada desde este repositorio. Cada `git push` a `main` la actualiza sola.
 - **Base de datos:** Turso (SQLite en la nube). Variables `TURSO_DATABASE_URL` y `TURSO_AUTH_TOKEN`. Sin ellas, la app usa el archivo local `data/radar.db`, como antes.
-- **Lecturas:** al abrir el radar, si los datos tienen más de 10 minutos (`STALE_AFTER_MINUTES`), se lanza una lectura en segundo plano. Además, `.github/workflows/radar.yml` lee cada hora y prepara el correo a las 9, 14 y 20 h (Madrid). Sus variables van en *Settings → Secrets and variables → Actions*.
+- **Lecturas:** al abrir el radar, si los datos tienen más de 10 minutos (`STALE_AFTER_MINUTES`), se lanza una lectura en segundo plano. Además, `.github/workflows/radar.yml` llama cada hora a `/api/cron` de la web publicada, que lee si hace falta y prepara el correo a las 9, 14 y 20 h (Madrid). No necesita secretos.
 - **Solo lectura:** con `PUBLIC_READONLY=1` la web pública no muestra los botones de Actualizar ni de Enviar correo.
-- **Correo real:** añade los secretos `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` y `MAIL_TO` en GitHub. Sin ellos, el correo se guarda en la base y se ve en "Ver el último correo".
+- **Correo real:** añade `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` y `MAIL_TO` como variables de entorno del proyecto en Vercel (*Settings → Environment Variables*) y vuelve a desplegar. Sin ellos, el correo se guarda en la base y se ve en "Ver el último correo".
 
 ## Línea editorial
 
