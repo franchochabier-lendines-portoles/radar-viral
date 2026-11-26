@@ -21,8 +21,8 @@ export const ProfileBar = ({ filters, themes, profileCount, allCount }: ProfileB
             {inProfile ? "Solo temas de la línea editorial" : "Todo lo viral, sin filtro de línea"}
           </h2>
           <p className="mt-1 text-sm text-muted">
-            Temas de servicio y curiosidades, en noticias de cualquier
-            medio.
+            Temas de servicio y curiosidades (casa, consumo, cocina, salud práctica, mascotas, tiempo, motor…), en noticias de
+            cualquier medio.
           </p>
         </div>
         <nav aria-label="Qué noticias ver" className="flex rounded-full border border-rule p-0.5">

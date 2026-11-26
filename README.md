@@ -18,7 +18,7 @@ Each story shows which outlet ran it, which one published it first and which oth
 
 ## Editorial profile
 
-By default the radar only recommends viral stories on the general topics covered by a set of writers at a Spanish news outlet. It doesn't look for their articles: it finds stories from any outlet on those topics (home and cleaning tips, taxes/pensions/inheritance, consumer news and supermarkets, cooking, psychology and longevity, practical health, pets, weather, public holidays, quotes, human-interest stories, and motoring).
+By default the radar only recommends viral stories on a set of service and human-interest topics, from any outlet (home and cleaning tips, taxes/pensions/inheritance, consumer news and supermarkets, cooking, psychology and longevity, practical health, pets, weather, public holidays, quotes, human-interest stories, and motoring).
 
 - The profile lives in `lib/profile.ts`: each topic has keywords in Spanish, English and French, the radar topic it maps to and a Google News query. Editing that list is all it takes to retune it.
 - Each story stores the profile topics it matches. The dashboard opens on the profile view and can switch to **Everything viral** (`/?ver=todo`). Topic buttons filter (`/?linea=mascotas`).

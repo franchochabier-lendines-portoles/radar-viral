@@ -1,7 +1,9 @@
 import type { Topic } from "@/lib/config";
 
 /**
- * Perfil editorial: los temas generales de una línea de contenidos de servicio y curiosidades. Se buscan noticias virales de cualquier medio sobre esos mismos temas.
+ * Perfil editorial: los temas generales de una línea de contenidos de servicio y
+ * curiosidades (casa, consumo, cocina, salud práctica, mascotas, tiempo, motor…).
+ * Se buscan noticias virales de cualquier medio sobre esos temas.
  *
  * Los términos van normalizados (minúsculas y sin tildes). "*" al final = prefijo.
  * Para ajustar el perfil basta con tocar esta lista.
